@@ -268,36 +268,56 @@ pub async fn link_package(
                 return;
             }
 
-            let linked_file_result = match link_file(
-                index_json.noarch,
-                &entry,
-                &package_dir,
-                &target_dir,
-                &target_prefix,
-                allow_symbolic_links && !entry.no_link,
-                allow_hard_links && !entry.no_link,
-                platform,
-                python_info.as_deref(),
-                options.apple_codesign_behavior,
-            ) {
-                Ok(result) => Ok((
-                    number_of_paths_entries,
-                    PathsEntry {
-                        relative_path: result.relative_path,
-                        path_type: entry.path_type.into(),
-                        no_link: entry.no_link,
-                        sha256: entry.sha256,
-                        sha256_in_prefix: Some(result.sha256),
-                        size_in_bytes: Some(result.file_size),
-                    },
-                )),
-                Err(e) => Err(InstallError::FailedToLink(entry.relative_path.clone(), e)),
-            };
+            let mut retry_count = 0;
+            let max_retries = 3;
+            loop {
+                let result = link_file(
+                    index_json.noarch,
+                    &entry,
+                    &package_dir,
+                    &target_dir,
+                    &target_prefix,
+                    allow_symbolic_links && !entry.no_link,
+                    allow_hard_links && !entry.no_link,
+                    platform,
+                    python_info.as_deref(),
+                    options.apple_codesign_behavior,
+                );
 
-            // Send the result to the main task for further processing.
-            let _ = tx.blocking_send(linked_file_result);
+                match result {
+                    Ok(link_result) => {
+                        let paths_entiry = PathsEntry {
+                            relative_path: link_result.relative_path,
+                            path_type: entry.path_type.into(),
+                            no_link: entry.no_link,
+                            sha256: entry.sha256,
+                            sha256_in_prefix: Some(link_result.sha256),
+                            size_in_bytes: Some(link_result.file_size),
+                        };
+
+                        // Send the result to the main task for further processing.
+                        let _ = tx.blocking_send(Ok((number_of_paths_entries, paths_entiry)));
+                        break;
+                    }
+                    Err(e) => {
+                        if retry_count >= max_retries {
+                            let _ = tx.blocking_send(Err(InstallError::FailedToLink(
+                                entry.relative_path.clone(),
+                                e,
+                            )));
+                            break;
+                        }
+                        tracing::warn!(
+                            "Retry linking {} to {}, retry count: {}",
+                            package_dir.to_string_lossy(),
+                            target_dir.to_string_lossy(),
+                            retry_count
+                        );
+                        retry_count += 1;
+                    }
+                }
+            }
         });
-
         number_of_paths_entries += 1;
     }
 
