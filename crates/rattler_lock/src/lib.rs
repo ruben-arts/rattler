@@ -4,7 +4,7 @@
 //! However, some types were added to enforce a bit more type safety.
 use ::serde::{Deserialize, Serialize};
 use indexmap::IndexMap;
-use rattler_conda_types::{MatchSpec, PackageName};
+use rattler_conda_types::{MatchSpec, NamelessMatchSpec, PackageName, Version};
 use rattler_conda_types::{NoArchType, Platform, RepoDataRecord};
 use serde_with::serde_as;
 use std::{collections::BTreeMap, io::Read, path::Path, str::FromStr};
@@ -22,6 +22,7 @@ use crate::conda::ConversionError;
 pub use conda::CondaLockedDependency;
 pub use hash::PackageHashes;
 pub use pip::PipLockedDependency;
+use crate::LockedDependencyKind::Conda;
 
 /// Represents the conda-lock file
 /// Contains the metadata regarding the lock files
@@ -181,6 +182,54 @@ impl LockedDependency {
     /// Returns true if this instance represents a pip package.
     pub fn is_pip(&self) -> bool {
         matches!(self.kind, LockedDependencyKind::Pip(_))
+    }
+
+    /// Test if the locked_dependency satisfies a match spec.
+    pub fn satisfies_requirement(
+        &self,
+        name: &PackageName,
+        spec: &NamelessMatchSpec,
+    ) -> bool {
+        // Check if the name of the package matches
+        if self.name != name.as_normalized() {
+            return false;
+        }
+
+        // Check if the version matches
+        if let Some(version_spec) = &spec.version {
+            let v = match Version::from_str(&self.version) {
+                Err(_) => return false,
+                Ok(v) => v,
+            };
+
+            if !version_spec.matches(&v) {
+                return false;
+            }
+        }
+
+        match &self.kind {
+        // if let Some(conda) = locked_package.as_conda() {
+            Conda(conda) => {
+                match (spec.build.as_ref(), &conda.build) {
+                    (Some(build_spec), Some(build)) => {
+                        if !build_spec.matches(build) {
+                            return false;
+                        }
+                    }
+                    (Some(_), None) => return false,
+                    _ => {}
+                }
+
+                if let Some(channel) = &spec.channel {
+                    if !conda.url.as_str().starts_with(channel.base_url.as_str()) {
+                        return false;
+                    }
+                }
+            }
+            LockedDependencyKind::Pip(_) => {}
+        }
+
+        true
     }
 }
 
