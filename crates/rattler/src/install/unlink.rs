@@ -156,16 +156,23 @@ pub async fn empty_trash(target_prefix: &Path) -> Result<(), UnlinkError> {
 
 async fn move_to_trash(target_prefix: &Path, path: &Path) -> Result<(), UnlinkError> {
     let mut trash_dest = target_prefix.join(".trash");
+    tracing::info!("Attempting to check existence of: {:?}", trash_dest);
     match tokio::fs::try_exists(&trash_dest).await {
-        Ok(true) => {}
-        Ok(false) => tokio_fs::create_dir(&trash_dest).await.map_err(|e| {
-            UnlinkError::FailedToCreateDirectory(trash_dest.to_string_lossy().to_string(), e)
-        })?,
+        Ok(true) => tracing::info!("Trash directory exists"),
+        Ok(false) => {
+            tracing::info!("Trash directory does not exist, creating: {:?}", trash_dest);
+            tokio::fs::create_dir(&trash_dest).await.map_err(|e| {
+                tracing::info!("Error creating directory: {:?}", e);
+                UnlinkError::FailedToCreateDirectory(trash_dest.to_string_lossy().to_string(), e)
+            })?;
+            tracing::info!("Trash directory created successfully");
+        }
         Err(e) => {
+            tracing::info!("Error checking existence: {:?}", e);
             return Err(UnlinkError::FailedToTestExistence(
                 trash_dest.to_string_lossy().to_string(),
                 e,
-            ))
+            ));
         }
     }
     let mut new_filename = OsString::new();
